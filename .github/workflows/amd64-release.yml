@@ -64,21 +64,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check SMTP secrets (optional email)
-        id: smtp_check
-        if: ${{ github.event.inputs.notify_email != '' }}
-        env:
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-        run: |
-          if [ -n "$SMTP_USER" ] && [ -n "$SMTP_PASS" ]; then
-            echo "can_send=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "can_send=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Send email notification (optional)
-        if: ${{ github.event.inputs.notify_email != '' && steps.smtp_check.outputs.can_send == 'true' }}
+        if: ${{ github.event.inputs.notify_email != '' && secrets.SMTP_USER != '' && secrets.SMTP_PASS != '' }}
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.163.com
@@ -98,7 +85,7 @@ jobs:
             <p>提示：大文件不建议走邮箱附件，建议从 Releases 下载。</p>
 
       - name: Warn when notify_email is set but SMTP secrets are missing
-        if: ${{ github.event.inputs.notify_email != '' && steps.smtp_check.outputs.can_send != 'true' }}
+        if: ${{ github.event.inputs.notify_email != '' && (secrets.SMTP_USER == '' || secrets.SMTP_PASS == '') }}
         run: |
           echo "[WARN] 你填写了 notify_email，但未配置 SMTP_USER/SMTP_PASS，已跳过邮件发送。"
           echo "[WARN] 不影响镜像打包与 Release 上传，仍可按原方式下载。"
