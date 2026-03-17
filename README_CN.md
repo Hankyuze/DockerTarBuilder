@@ -20,3 +20,16 @@
 或 <br>
 `docker load < xxx.tar.gz`
 > 如果是Artifacts压缩文件 则需要先解压。解压后还是 `tar.gz` 无需再解压 直接load即可。
+
+## 4、可选：构建完成后通过163邮箱接收通知（AMD64 Release工作流）
+> `Get-AMD64-Docker-Images-Release` 现支持可选输入 `notify_email`。<br>
+> 你可以在运行工作流时填写 `xxx@163.com`，构建完成后会收到包含 Release 下载链接的邮件。<br>
+> 注意：镜像文件通常较大，不建议通过邮箱附件发送，推荐邮件里发下载链接。<br>
+
+### 需要提前配置的仓库 Secrets（仅在你要邮件通知时）
+- `SMTP_USER`：163邮箱账号（例如 `abc@163.com`）
+- `SMTP_PASS`：163邮箱 SMTP 授权码（不是邮箱登录密码）
+
+### 不配置会怎样？
+- 如果你不填写 `notify_email`：工作流行为与之前完全一致（只打包并上传到 Releases）。
+- 如果你填写了 `notify_email` 但没配 `SMTP_USER/SMTP_PASS`：会跳过邮件发送，并在日志提示，不影响打包和下载。

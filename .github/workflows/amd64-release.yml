@@ -7,6 +7,10 @@ on:
         description: '请填写docker镜像名称,多个用英文逗号分开'
         required: true
         default: 'alpine:latest,alpine/curl,busybox:stable-glibc'
+      notify_email:
+        description: '可选：构建完成后通知邮箱（例如 123456@163.com）'
+        required: false
+        default: ''
 
 jobs:
   pull_and_package:
@@ -59,3 +63,29 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send email notification (optional)
+        if: ${{ github.event.inputs.notify_email != '' && secrets.SMTP_USER != '' && secrets.SMTP_PASS != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.163.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "[DockerTarBuilder] AMD64 镜像构建完成"
+          to: ${{ github.event.inputs.notify_email }}
+          from: DockerTarBuilder <${{ secrets.SMTP_USER }}>
+          html_body: |
+            <p>你的镜像构建已完成。</p>
+            <p><strong>镜像输入：</strong> ${{ github.event.inputs.docker_images }}</p>
+            <p><strong>下载地址：</strong>
+            <a href="https://github.com/${{ github.repository }}/releases/tag/DockerTarBuilder-AMD64">
+            https://github.com/${{ github.repository }}/releases/tag/DockerTarBuilder-AMD64</a></p>
+            <p>提示：大文件不建议走邮箱附件，建议从 Releases 下载。</p>
+
+      - name: Warn when notify_email is set but SMTP secrets are missing
+        if: ${{ github.event.inputs.notify_email != '' && (secrets.SMTP_USER == '' || secrets.SMTP_PASS == '') }}
+        run: |
+          echo "[WARN] 你填写了 notify_email，但未配置 SMTP_USER/SMTP_PASS，已跳过邮件发送。"
+          echo "[WARN] 不影响镜像打包与 Release 上传，仍可按原方式下载。"
