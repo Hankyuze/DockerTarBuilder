@@ -4,14 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       docker_images:
-        description: '请填写 Docker 镜像名称，多个用英文逗号分开'
+        description: '填写 Docker 镜像名称，多个镜像使用英文逗号分隔'
         required: true
-        default: 'alpine:latest,alpine/curl,busybox:stable-glibc'
-
-      notify_email:
-        description: '可选：构建完成后通知邮箱（例如 123456@163.com）'
-        required: false
-        default: ''
+        default: 'alpine:latest'
 
 permissions:
   contents: write
@@ -19,342 +14,92 @@ permissions:
 jobs:
   pull_and_package:
     runs-on: ubuntu-22.04
+    timeout-minutes: 120
 
     steps:
-
-      # ============================================================
-      # 1. 拉取仓库代码
-      # ============================================================
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # ============================================================
-      # 2. 拉取 Docker 镜像、打包、压缩、自动分卷
-      # ============================================================
-      - name: Pull Docker Images and Package
+      - name: Pull Package Split
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          images="${{ github.event.inputs.docker_images }}"
+          mkdir -p dist
 
-          # 多个镜像使用英文逗号分割
+          images="${{ inputs.docker_images }}"
           IFS=',' read -r -a image_array <<< "$images"
 
-          echo "=========================================="
-          echo "开始处理 Docker 镜像"
-          echo "=========================================="
-
           for image in "${image_array[@]}"; do
-
-            # ------------------------------------------------------
-            # 去掉镜像名前后的空格
-            # 防止出现：
-            # invalid reference format
-            # ------------------------------------------------------
             image="$(echo "$image" | xargs)"
+            [ -z "$image" ] && continue
 
-            if [ -z "$image" ]; then
-              continue
-            fi
-
-            echo ""
             echo "=========================================="
-            echo "当前镜像：$image"
+            echo "处理镜像：$image"
             echo "=========================================="
 
-            # ------------------------------------------------------
-            # 拉取 AMD64 镜像
-            # ------------------------------------------------------
-            echo "[1/6] Pull Docker Image"
+            echo "[1/5] docker pull"
+            docker pull --platform linux/amd64 "$image"
 
-            docker pull \
-              --platform linux/amd64 \
-              "$image"
+            image_name="$(echo "$image" | sed 's#[/:@]#_#g')"
+            gz_file="${image_name}-amd64.tar.gz"
 
+            echo "[2/5] docker save + gzip"
+            docker save "$image" | gzip -1 > "dist/$gz_file"
 
-            # ------------------------------------------------------
-            # 把镜像名称转换成可以作为文件名的格式
-            #
-            # 例如：
-            #
-            # pytorch/pytorch:2.13.0-cuda13.2
-            #
-            # 转换为：
-            #
-            # pytorch_pytorch_2.13.0-cuda13.2
-            # ------------------------------------------------------
-            image_name="${image//\//_}"
-            image_name="${image_name//:/_}"
+            echo "压缩后大小："
+            ls -lh "dist/$gz_file"
 
-            tar_file="${image_name}-amd64.tar"
-            gz_file="${tar_file}.gz"
+            echo "[3/5] SHA256"
+            (
+              cd dist
+              sha256sum "$gz_file" > "${gz_file}.sha256"
+            )
 
-
-            # ------------------------------------------------------
-            # Docker Save
-            # ------------------------------------------------------
-            echo "[2/6] Docker Save"
-
-            docker save \
-              "$image" \
-              -o "$tar_file"
-
-
-            # ------------------------------------------------------
-            # gzip 压缩
-            # ------------------------------------------------------
-            echo "[3/6] Compress Image"
-
-            gzip -c "$tar_file" > "$gz_file"
-
-            rm -f "$tar_file"
-
-
-            # ------------------------------------------------------
-            # 生成完整镜像压缩包的 SHA256
-            #
-            # 即使后面进行分卷，这个 SHA256 仍然用于
-            # 合并后的完整 tar.gz 校验
-            # ------------------------------------------------------
-            echo "[4/6] Generate SHA256"
-
-            sha256sum "$gz_file" > "${gz_file}.sha256"
-
-
-            # ------------------------------------------------------
-            # 获取压缩包大小
-            # ------------------------------------------------------
-            size=$(stat -c%s "$gz_file")
-
-            # 1.8 GiB
-            # GitHub Release 单个 Asset 最大 2 GiB
-            # 留一点安全余量
+            size=$(stat -c%s "dist/$gz_file")
             limit=$((1800 * 1024 * 1024))
 
-            echo ""
-            echo "文件：$gz_file"
-            echo "大小：$(du -h "$gz_file" | cut -f1)"
-            echo ""
-
-
-            # ------------------------------------------------------
-            # 如果 > 1.8 GiB，自动分卷
-            # ------------------------------------------------------
             if [ "$size" -gt "$limit" ]; then
-
-              echo "[5/6] 文件超过 1.8 GiB"
-              echo "开始自动分卷..."
-
+              echo "[4/5] 文件超过 1.8GiB，开始分卷"
               split \
                 -b 1800M \
                 -d \
                 -a 3 \
-                "$gz_file" \
-                "${gz_file}.part-"
+                "dist/$gz_file" \
+                "dist/${gz_file}.part-"
 
-              # 分卷完成后删除原始大文件
-              # 防止后面的 Release 上传再次尝试上传 >2GiB 文件
-              rm -f "$gz_file"
-
-              echo ""
-              echo "分卷结果："
-
-              ls -lh "${gz_file}.part-"*
-
+              rm -f "dist/$gz_file"
             else
-
-              echo "[5/6] 文件小于 1.8 GiB"
-              echo "无需分卷"
-
+              echo "[4/5] 文件未超过 1.8GiB，无需分卷"
             fi
 
-
-            echo ""
-            echo "[6/6] 镜像处理完成：$image"
-            echo ""
-
+            echo "[5/5] 完成：$image"
           done
 
-
-      # ============================================================
-      # 3. 查看生成的文件
-      # ============================================================
-      - name: List generated files
+      - name: Show Files
         shell: bash
         run: |
-          echo ""
           echo "=========================================="
-          echo "最终生成文件"
+          echo "最终待上传文件"
           echo "=========================================="
+          ls -lh dist/
 
-          find "$GITHUB_WORKSPACE" \
-            \( \
-              -name "*.tar.gz" \
-              -o \
-              -name "*.tar.gz.part-*" \
-              -o \
-              -name "*.sha256" \
-            \) \
-            -type f \
-            -exec ls -lh {} \;
-
-          release_name=$(TZ="Asia/Shanghai" date +'%Y-%m-%d %H:%M Build')
-
-          echo "RELEASE_NAME=$release_name" >> "$GITHUB_ENV"
-
-
-      # ============================================================
-      # 4. 创建 / 更新 GitHub Release
-      #
-      # 同时上传：
-      #
-      # 小镜像：
-      # xxx.tar.gz
-      #
-      # 大镜像：
-      # xxx.tar.gz.part-000
-      # xxx.tar.gz.part-001
-      #
-      # 校验：
-      # xxx.tar.gz.sha256
-      # ============================================================
-      - name: Create Release and Upload Docker Images
-        uses: softprops/action-gh-release@v2.1.0
-
-        with:
-          tag_name: DockerTarBuilder-AMD64
-
-          name: ${{ env.RELEASE_NAME }} for x86-64
-
-          body: |
-
-            ## DockerTarBuilder AMD64
-
-            Docker 镜像离线下载 / 打包工具。
-
-            ### 小于 1.8 GiB 的镜像
-
-            会生成：
-
-            ```text
-            xxx-amd64.tar.gz
-            xxx-amd64.tar.gz.sha256
-            ```
-
-            下载以后直接加载：
-
-            ```bash
-            docker load -i xxx-amd64.tar.gz
-            ```
-
-
-            ### 大于 1.8 GiB 的镜像
-
-            GitHub Release 单文件不能超过 2 GiB。
-
-            系统会自动生成：
-
-            ```text
-            xxx-amd64.tar.gz.part-000
-            xxx-amd64.tar.gz.part-001
-            xxx-amd64.tar.gz.part-002
-            xxx-amd64.tar.gz.sha256
-            ```
-
-            下载全部分卷以后执行：
-
-            ```bash
-            cat xxx-amd64.tar.gz.part-* > xxx-amd64.tar.gz
-            ```
-
-            校验：
-
-            ```bash
-            sha256sum -c xxx-amd64.tar.gz.sha256
-            ```
-
-            正常应该显示：
-
-            ```text
-            xxx-amd64.tar.gz: OK
-            ```
-
-            然后加载 Docker：
-
-            ```bash
-            docker load -i xxx-amd64.tar.gz
-            ```
-
-          draft: false
-          prerelease: false
-
-          files: |
-            ${{ github.workspace }}/*.tar.gz
-            ${{ github.workspace }}/*.tar.gz.part-*
-            ${{ github.workspace }}/*.sha256
-
+      - name: Upload Release
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
-      # ============================================================
-      # 5. 邮件通知
-      # ============================================================
-      - name: Send email notification
-        if: ${{ github.event.inputs.notify_email != '' && secrets.SMTP_USER != '' && secrets.SMTP_PASS != '' }}
-
-        uses: dawidd6/action-send-mail@v3
-
-        with:
-          server_address: smtp.163.com
-          server_port: 465
-          secure: true
-
-          username: ${{ secrets.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}
-
-          subject: "[DockerTarBuilder] AMD64 镜像构建完成"
-
-          to: ${{ github.event.inputs.notify_email }}
-
-          from: DockerTarBuilder <${{ secrets.SMTP_USER }}>
-
-          html_body: |
-
-            <p>Docker 镜像构建已经完成。</p>
-
-            <p>
-              <strong>镜像：</strong>
-              ${{ github.event.inputs.docker_images }}
-            </p>
-
-            <p>
-              <strong>下载地址：</strong>
-            </p>
-
-            <p>
-              <a href="https://github.com/${{ github.repository }}/releases/tag/DockerTarBuilder-AMD64">
-                https://github.com/${{ github.repository }}/releases/tag/DockerTarBuilder-AMD64
-              </a>
-            </p>
-
-            <p>
-              大于 1.8 GiB 的 Docker 镜像已经自动进行分卷。
-            </p>
-
-
-      # ============================================================
-      # 6. 没配置邮箱时只警告，不影响任务
-      # ============================================================
-      - name: Warn when SMTP secrets are missing
-
-        if: ${{ github.event.inputs.notify_email != '' && (secrets.SMTP_USER == '' || secrets.SMTP_PASS == '') }}
-
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
 
-          echo "[WARN] 已填写 notify_email"
-          echo "[WARN] 但没有配置 SMTP_USER / SMTP_PASS"
-          echo "[WARN] 已跳过邮件通知"
-          echo "[WARN] 不影响 Docker 镜像打包和 Release 上传"
+          TAG="DockerTarBuilder-AMD64"
+          RELEASE_NAME="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M Build for x86-64')"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release 已存在，更新 Release"
+            gh release edit "$TAG" --title "$RELEASE_NAME"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            echo "创建新 Release"
+            gh release create "$TAG" dist/* \
+              --title "$RELEASE_NAME" \
+              --notes "Docker AMD64 离线镜像。超过 1.8GiB 的文件已自动分卷。"
+          fi
+
+          echo "Release 上传完成"
