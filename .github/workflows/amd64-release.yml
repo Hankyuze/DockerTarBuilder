@@ -17,6 +17,9 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Pull Package Split
         shell: bash
         run: |
@@ -92,13 +95,25 @@ jobs:
           TAG="DockerTarBuilder-AMD64"
           RELEASE_NAME="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M Build for x86-64')"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          echo "仓库: $GH_REPO"
+          echo "提交: $GITHUB_SHA"
+
+          if gh release view "$TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
             echo "Release 已存在，更新 Release"
-            gh release edit "$TAG" --title "$RELEASE_NAME"
-            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" \
+              --repo "$GH_REPO" \
+              --title "$RELEASE_NAME"
+
+            gh release upload "$TAG" \
+              dist/* \
+              --repo "$GH_REPO" \
+              --clobber
           else
             echo "创建新 Release"
-            gh release create "$TAG" dist/* \
+            gh release create "$TAG" \
+              dist/* \
+              --repo "$GH_REPO" \
+              --target "$GITHUB_SHA" \
               --title "$RELEASE_NAME" \
               --notes "Docker AMD64 离线镜像。超过 1.8GiB 的文件已自动分卷。"
           fi
